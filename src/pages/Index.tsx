@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -9,17 +9,28 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import Icon from '@/components/ui/icon';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
+import { useToast } from '@/hooks/use-toast';
+import { api } from '@/lib/api';
 
 interface Server {
-  id: string;
+  id: number;
   name: string;
   status: 'online' | 'offline' | 'starting';
-  players: number;
-  maxPlayers: number;
-  uptime: string;
-  cpu: number;
-  ram: number;
   template: string;
+  ip: string;
+  port: number;
+  ftp_host: string;
+  ftp_port: number;
+  ftp_username: string;
+  ftp_password: string;
+  max_players: number;
+  cpu_usage: number;
+  ram_usage: number;
+  current_players: number;
+  auto_restart: boolean;
+  backup_enabled: boolean;
+  is_free: boolean;
 }
 
 const templates = [
@@ -35,39 +46,140 @@ const plans = [
 ];
 
 const Index = () => {
+  const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('home');
-  const [servers] = useState<Server[]>([
-    {
-      id: '1',
-      name: 'Мой RolePlay Сервер',
-      status: 'online',
-      players: 45,
-      maxPlayers: 100,
-      uptime: '3д 14ч',
-      cpu: 45,
-      ram: 62,
-      template: 'RolePlay'
-    },
-    {
-      id: '2',
-      name: 'DeathMatch Arena',
-      status: 'online',
-      players: 28,
-      maxPlayers: 50,
-      uptime: '1д 8ч',
-      cpu: 32,
-      ram: 48,
-      template: 'DeathMatch'
-    }
-  ]);
+  const [isAuth, setIsAuth] = useState(false);
+  const [showAuthDialog, setShowAuthDialog] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [user, setUser] = useState<any>(null);
+  const [servers, setServers] = useState<Server[]>([]);
+  const [selectedServer, setSelectedServer] = useState<Server | null>(null);
+  const [balance, setBalance] = useState(0);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newServerName, setNewServerName] = useState('');
+  const [newServerTemplate, setNewServerTemplate] = useState('roleplay');
+  const [showBalanceDialog, setShowBalanceDialog] = useState(false);
+  const [balanceAmount, setBalanceAmount] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const [selectedServer, setSelectedServer] = useState<Server | null>(servers[0]);
-  const [serverConfig, setServerConfig] = useState({
-    maxPlayers: 100,
-    autoRestart: true,
-    backupEnabled: true,
-    gameMode: 'roleplay'
-  });
+  useEffect(() => {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      const userData = JSON.parse(savedUser);
+      setUser(userData);
+      setIsAuth(true);
+      loadUserData(userData.user_id);
+    }
+  }, []);
+
+  const loadUserData = async (userId: string) => {
+    try {
+      const serversData = await api.servers.list(userId);
+      setServers(serversData.servers || []);
+      
+      const balanceData = await api.payments.getBalance(userId);
+      setBalance(balanceData.balance || 0);
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
+
+  const handleAuth = async () => {
+    setLoading(true);
+    try {
+      const result = authMode === 'login' 
+        ? await api.auth.login(email, password)
+        : await api.auth.register(email, password);
+      
+      if (result.success || result.token) {
+        setUser(result);
+        setIsAuth(true);
+        localStorage.setItem('user', JSON.stringify(result));
+        setShowAuthDialog(false);
+        toast({ title: 'Успешно', description: authMode === 'login' ? 'Вы вошли в систему' : 'Аккаунт создан' });
+        loadUserData(result.user_id);
+      } else {
+        toast({ title: 'Ошибка', description: result.error || 'Не удалось войти', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Ошибка', description: 'Проблема с подключением', variant: 'destructive' });
+    }
+    setLoading(false);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('user');
+    setUser(null);
+    setIsAuth(false);
+    setServers([]);
+    setBalance(0);
+    toast({ title: 'Выход', description: 'Вы вышли из системы' });
+  };
+
+  const handleCreateServer = async (isFree: boolean = false) => {
+    if (!newServerName || !newServerTemplate) {
+      toast({ title: 'Ошибка', description: 'Заполните все поля', variant: 'destructive' });
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const result = await api.servers.create(user.user_id, newServerName, newServerTemplate, isFree);
+      
+      if (result.success) {
+        toast({ title: 'Успешно', description: `Сервер создан! IP: ${result.ip}:${result.port}` });
+        setShowCreateDialog(false);
+        setNewServerName('');
+        loadUserData(user.user_id);
+      } else {
+        toast({ title: 'Ошибка', description: result.error || 'Не удалось создать сервер', variant: 'destructive' });
+      }
+    } catch (error) {
+      toast({ title: 'Ошибка', description: 'Проблема с подключением', variant: 'destructive' });
+    }
+    setLoading(false);
+  };
+
+  const handleAddBalance = async () => {
+    const amount = parseFloat(balanceAmount);
+    if (!amount || amount <= 0) {
+      toast({ title: 'Ошибка', description: 'Введите корректную сумму', variant: 'destructive' });
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      const result = await api.payments.addBalance(user.user_id, amount);
+      if (result.success) {
+        setBalance(result.balance);
+        setShowBalanceDialog(false);
+        setBalanceAmount('');
+        toast({ title: 'Успешно', description: `Баланс пополнен на ${amount}₽` });
+      }
+    } catch (error) {
+      toast({ title: 'Ошибка', description: 'Не удалось пополнить баланс', variant: 'destructive' });
+    }
+    setLoading(false);
+  };
+
+  const handleServerAction = async (serverId: number, action: 'start' | 'stop') => {
+    setLoading(true);
+    try {
+      const result = action === 'start' 
+        ? await api.servers.start(user.user_id, serverId)
+        : await api.servers.stop(user.user_id, serverId);
+      
+      if (result.success) {
+        toast({ title: 'Успешно', description: `Сервер ${action === 'start' ? 'запущен' : 'остановлен'}` });
+        loadUserData(user.user_id);
+      }
+    } catch (error) {
+      toast({ title: 'Ошибка', description: 'Не удалось выполнить действие', variant: 'destructive' });
+    }
+    setLoading(false);
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -101,10 +213,27 @@ const Index = () => {
                 </button>
               ))}
             </div>
-            <Button className="glow">
-              <Icon name="User" className="mr-2" size={16} />
-              Личный кабинет
-            </Button>
+            {isAuth ? (
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Icon name="Wallet" size={20} className="text-primary" />
+                  <span className="font-bold">{balance.toFixed(2)}₽</span>
+                  <Button size="sm" variant="outline" onClick={() => setShowBalanceDialog(true)}>
+                    <Icon name="Plus" size={14} className="mr-1" />
+                    Пополнить
+                  </Button>
+                </div>
+                <Button variant="outline" onClick={handleLogout}>
+                  <Icon name="LogOut" className="mr-2" size={16} />
+                  Выйти
+                </Button>
+              </div>
+            ) : (
+              <Button className="glow" onClick={() => setShowAuthDialog(true)}>
+                <Icon name="User" className="mr-2" size={16} />
+                Войти
+              </Button>
+            )}
           </div>
         </div>
       </nav>
@@ -160,14 +289,42 @@ const Index = () => {
           <div className="space-y-6 animate-fade-in">
             <div className="flex items-center justify-between">
               <h2 className="text-3xl font-bold">Мои серверы</h2>
-              <Button className="glow">
+              <Button className="glow" onClick={() => setShowCreateDialog(true)} disabled={!isAuth}>
                 <Icon name="Plus" className="mr-2" size={16} />
                 Создать сервер
               </Button>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-6">
-              {servers.map((server) => (
+            {!isAuth ? (
+              <Card className="col-span-full">
+                <CardContent className="py-12 text-center">
+                  <Icon name="Server" className="mx-auto mb-4 text-muted-foreground" size={48} />
+                  <h3 className="text-xl font-bold mb-2">Войдите, чтобы управлять серверами</h3>
+                  <p className="text-muted-foreground mb-4">
+                    Создайте аккаунт и получите 1 бесплатный сервер!
+                  </p>
+                  <Button onClick={() => setShowAuthDialog(true)} className="glow">
+                    Войти или создать аккаунт
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : servers.length === 0 ? (
+              <Card className="col-span-full">
+                <CardContent className="py-12 text-center">
+                  <Icon name="Plus" className="mx-auto mb-4 text-muted-foreground" size={48} />
+                  <h3 className="text-xl font-bold mb-2">У вас пока нет серверов</h3>
+                  <p className="text-muted-foreground mb-4">
+                    Создайте свой первый сервер бесплатно!
+                  </p>
+                  <Button onClick={() => setShowCreateDialog(true)} className="glow">
+                    <Icon name="Plus" className="mr-2" size={16} />
+                    Создать бесплатный сервер
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-6">
+                {servers.map((server) => (
                 <Card
                   key={server.id}
                   className={`border-border hover:border-primary transition-all cursor-pointer ${
@@ -193,110 +350,172 @@ const Index = () => {
                     <CardDescription>{server.template}</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">Игроки</span>
-                      <span className="font-semibold">
-                        {server.players}/{server.maxPlayers}
-                      </span>
-                    </div>
-                    <Progress value={(server.players / server.maxPlayers) * 100} className="h-2" />
-                    
-                    <div className="grid grid-cols-2 gap-4 pt-2">
-                      <div className="space-y-1">
-                        <div className="text-sm text-muted-foreground">CPU</div>
-                        <div className="flex items-center gap-2">
-                          <Progress value={server.cpu} className="h-1.5" />
-                          <span className="text-xs font-medium">{server.cpu}%</span>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">IP:Порт</span>
+                        <span className="font-mono font-semibold">{server.ip}:{server.port}</span>
+                      </div>
+                      
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">Игроки</span>
+                        <span className="font-semibold">
+                          {server.current_players}/{server.max_players}
+                        </span>
+                      </div>
+                      <Progress value={(server.current_players / server.max_players) * 100} className="h-2" />
+                      
+                      <div className="grid grid-cols-2 gap-4 pt-2">
+                        <div className="space-y-1">
+                          <div className="text-sm text-muted-foreground">CPU</div>
+                          <div className="flex items-center gap-2">
+                            <Progress value={server.cpu_usage} className="h-1.5" />
+                            <span className="text-xs font-medium">{server.cpu_usage.toFixed(0)}%</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="text-sm text-muted-foreground">RAM</div>
+                          <div className="flex items-center gap-2">
+                            <Progress value={server.ram_usage} className="h-1.5" />
+                            <span className="text-xs font-medium">{server.ram_usage.toFixed(0)}%</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="space-y-1">
-                        <div className="text-sm text-muted-foreground">RAM</div>
-                        <div className="flex items-center gap-2">
-                          <Progress value={server.ram} className="h-1.5" />
-                          <span className="text-xs font-medium">{server.ram}%</span>
-                        </div>
-                      </div>
+                      
+                      {server.is_free && (
+                        <Badge variant="outline" className="w-fit">Бесплатный</Badge>
+                      )}
                     </div>
 
                     <div className="flex gap-2 pt-2">
-                      <Button size="sm" className="flex-1">
-                        <Icon name="Play" className="mr-1" size={14} />
-                        Перезапуск
+                      <Button 
+                        size="sm" 
+                        className="flex-1"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleServerAction(server.id, server.status === 'online' ? 'stop' : 'start');
+                        }}
+                        disabled={loading}
+                      >
+                        <Icon name={server.status === 'online' ? 'Square' : 'Play'} className="mr-1" size={14} />
+                        {server.status === 'online' ? 'Остановить' : 'Запустить'}
                       </Button>
-                      <Button size="sm" variant="outline" className="flex-1">
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="flex-1"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedServer(server);
+                        }}
+                      >
                         <Icon name="Settings" className="mr-1" size={14} />
-                        Настройки
+                        Детали
                       </Button>
                     </div>
                   </CardContent>
                 </Card>
               ))}
-            </div>
+              </div>
+            )}
 
-            {selectedServer && (
+            {selectedServer && isAuth && (
               <Card className="border-primary glow">
                 <CardHeader>
                   <CardTitle>Панель управления: {selectedServer.name}</CardTitle>
                   <CardDescription>Настройте параметры вашего сервера</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Tabs defaultValue="config" className="w-full">
+                  <Tabs defaultValue="info" className="w-full">
                     <TabsList className="grid w-full grid-cols-3">
-                      <TabsTrigger value="config">Конфигурация</TabsTrigger>
-                      <TabsTrigger value="monitor">Мониторинг</TabsTrigger>
-                      <TabsTrigger value="backup">Бэкапы</TabsTrigger>
+                      <TabsTrigger value="info">Информация</TabsTrigger>
+                      <TabsTrigger value="ftp">FTP Доступ</TabsTrigger>
+                      <TabsTrigger value="config">Настройки</TabsTrigger>
                     </TabsList>
-                    <TabsContent value="config" className="space-y-4 pt-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="maxplayers">Макс. игроков: {serverConfig.maxPlayers}</Label>
-                        <Slider
-                          id="maxplayers"
-                          value={[serverConfig.maxPlayers]}
-                          onValueChange={(val) => setServerConfig({...serverConfig, maxPlayers: val[0]})}
-                          max={200}
-                          min={10}
-                          step={10}
-                        />
+                    <TabsContent value="info" className="space-y-4 pt-4">
+                      <div className="grid gap-4">
+                        <div className="p-4 bg-muted rounded-lg">
+                          <div className="text-sm text-muted-foreground mb-1">IP Адрес</div>
+                          <div className="font-mono font-bold text-lg">{selectedServer.ip}:{selectedServer.port}</div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Card>
+                            <CardHeader>
+                              <CardTitle className="text-sm">Онлайн игроков</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="text-3xl font-bold text-primary">{selectedServer.current_players}</div>
+                            </CardContent>
+                          </Card>
+                          <Card>
+                            <CardHeader>
+                              <CardTitle className="text-sm">Макс. игроков</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="text-3xl font-bold text-secondary">{selectedServer.max_players}</div>
+                            </CardContent>
+                          </Card>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="p-3 bg-muted rounded-lg">
+                            <div className="text-sm text-muted-foreground mb-1">CPU</div>
+                            <div className="font-bold">{selectedServer.cpu_usage.toFixed(1)}%</div>
+                          </div>
+                          <div className="p-3 bg-muted rounded-lg">
+                            <div className="text-sm text-muted-foreground mb-1">RAM</div>
+                            <div className="font-bold">{selectedServer.ram_usage.toFixed(1)}%</div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="autorestart">Автоперезагрузка</Label>
-                        <Switch
-                          id="autorestart"
-                          checked={serverConfig.autoRestart}
-                          onCheckedChange={(val) => setServerConfig({...serverConfig, autoRestart: val})}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="backup">Автобэкапы</Label>
-                        <Switch
-                          id="backup"
-                          checked={serverConfig.backupEnabled}
-                          onCheckedChange={(val) => setServerConfig({...serverConfig, backupEnabled: val})}
-                        />
-                      </div>
-                      <Button className="w-full glow">
-                        <Icon name="Save" className="mr-2" size={16} />
-                        Сохранить настройки
-                      </Button>
                     </TabsContent>
-                    <TabsContent value="monitor" className="space-y-4 pt-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="text-sm">Онлайн игроков</CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="text-3xl font-bold text-primary">{selectedServer.players}</div>
-                          </CardContent>
-                        </Card>
-                        <Card>
-                          <CardHeader>
-                            <CardTitle className="text-sm">Аптайм</CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <div className="text-3xl font-bold text-secondary">{selectedServer.uptime}</div>
-                          </CardContent>
-                        </Card>
+                    <TabsContent value="ftp" className="space-y-4 pt-4">
+                      <div className="p-4 bg-muted rounded-lg space-y-3">
+                        <div>
+                          <div className="text-sm text-muted-foreground mb-1">FTP Хост</div>
+                          <div className="font-mono font-bold">{selectedServer.ftp_host}:{selectedServer.ftp_port}</div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-muted-foreground mb-1">Логин</div>
+                          <div className="font-mono font-bold">{selectedServer.ftp_username}</div>
+                        </div>
+                        <div>
+                          <div className="text-sm text-muted-foreground mb-1">Пароль</div>
+                          <div className="font-mono font-bold">{selectedServer.ftp_password}</div>
+                        </div>
+                      </div>
+                      <div className="text-sm text-muted-foreground p-4 bg-card rounded-lg">
+                        <p className="mb-2"><strong>Как подключиться:</strong></p>
+                        <ol className="list-decimal list-inside space-y-1">
+                          <li>Скачайте FTP клиент (FileZilla, WinSCP)</li>
+                          <li>Используйте данные выше для подключения</li>
+                          <li>Загружайте и редактируйте файлы сервера</li>
+                        </ol>
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="config" className="space-y-4 pt-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Автоперезагрузка</Label>
+                          <p className="text-sm text-muted-foreground">Перезапуск при сбое</p>
+                        </div>
+                        <Switch
+                          checked={selectedServer.auto_restart}
+                          disabled
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Автобэкапы</Label>
+                          <p className="text-sm text-muted-foreground">Ежедневное резервное копирование</p>
+                        </div>
+                        <Switch
+                          checked={selectedServer.backup_enabled}
+                          disabled
+                        />
+                      </div>
+                      <div className="p-4 bg-muted rounded-lg">
+                        <p className="text-sm text-muted-foreground">
+                          Для изменения настроек свяжитесь с поддержкой
+                        </p>
                       </div>
                     </TabsContent>
                     <TabsContent value="backup" className="space-y-4 pt-4">
@@ -456,6 +675,142 @@ const Index = () => {
           </div>
         )}
       </main>
+
+      <Dialog open={showAuthDialog} onOpenChange={setShowAuthDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{authMode === 'login' ? 'Вход' : 'Регистрация'}</DialogTitle>
+            <DialogDescription>
+              {authMode === 'login' ? 'Войдите в свой аккаунт' : 'Создайте новый аккаунт'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input 
+                id="email" 
+                type="email" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="your@email.com"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Пароль</Label>
+              <Input 
+                id="password" 
+                type="password" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+              {authMode === 'login' ? 'Создать аккаунт' : 'Уже есть аккаунт?'}
+            </Button>
+            <Button onClick={handleAuth} disabled={loading}>
+              {authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Создать новый сервер</DialogTitle>
+            <DialogDescription>
+              Создайте бесплатный сервер или купите платный за 50₽
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="servername">Название сервера</Label>
+              <Input 
+                id="servername" 
+                value={newServerName} 
+                onChange={(e) => setNewServerName(e.target.value)}
+                placeholder="Мой SA-MP сервер"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="template">Шаблон</Label>
+              <select 
+                id="template"
+                value={newServerTemplate}
+                onChange={(e) => setNewServerTemplate(e.target.value)}
+                className="w-full px-3 py-2 rounded-md border border-input bg-background"
+              >
+                <option value="roleplay">RolePlay</option>
+                <option value="deathmatch">DeathMatch</option>
+                <option value="freeroam">FreeRoam</option>
+              </select>
+            </div>
+            <div className="p-4 bg-muted rounded-lg">
+              <p className="text-sm text-muted-foreground mb-2">Ваш баланс: <strong>{balance.toFixed(2)}₽</strong></p>
+              <p className="text-xs text-muted-foreground">
+                {servers.filter(s => s.is_free).length === 0 
+                  ? '✓ Вы можете создать 1 бесплатный сервер'
+                  : 'Бесплатный сервер уже создан. Новые серверы - 50₽'}
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            {servers.filter(s => s.is_free).length === 0 && (
+              <Button variant="outline" onClick={() => handleCreateServer(true)} disabled={loading}>
+                <Icon name="Gift" className="mr-2" size={16} />
+                Создать бесплатно
+              </Button>
+            )}
+            <Button onClick={() => handleCreateServer(false)} disabled={loading || balance < 50}>
+              <Icon name="Plus" className="mr-2" size={16} />
+              Купить за 50₽
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showBalanceDialog} onOpenChange={setShowBalanceDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Пополнить баланс</DialogTitle>
+            <DialogDescription>
+              Текущий баланс: {balance.toFixed(2)}₽
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="amount">Сумма пополнения</Label>
+              <Input 
+                id="amount" 
+                type="number" 
+                value={balanceAmount} 
+                onChange={(e) => setBalanceAmount(e.target.value)}
+                placeholder="100"
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[50, 100, 500].map(amount => (
+                <Button 
+                  key={amount} 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setBalanceAmount(amount.toString())}
+                >
+                  {amount}₽
+                </Button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={handleAddBalance} disabled={loading}>
+              Пополнить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <footer className="border-t border-border mt-20 py-8">
         <div className="container mx-auto px-4 text-center text-muted-foreground">

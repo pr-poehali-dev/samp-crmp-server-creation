@@ -1,0 +1,37 @@
+{
+  "tests": [
+    {
+      "name": "Get user servers",
+      "method": "GET",
+      "path": "/",
+      "headers": {
+        "X-User-Id": "1"
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "servers": []
+      },
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Create free server",
+      "method": "POST",
+      "path": "/",
+      "headers": {
+        "X-User-Id": "1"
+      },
+      "body": {
+        "name": "Test Server",
+        "template": "roleplay",
+        "is_free": true
+      },
+      "expectedStatus": 200,
+      "expectedBody": {
+        "success": true,
+        "ip": "string",
+        "port": "number"
+      },
+      "bodyMatcher": "partial"
+    }
+  ]
+}
